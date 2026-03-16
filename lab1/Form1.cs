@@ -344,7 +344,7 @@ namespace Lab1
             clone.Size = source.Size;
 
             // Устанавливаем базовую заливку (белый цвет)
-            clone.FillColor = Color.White;
+            clone.FillColor = Color.Transparent;
 
             // Пересоздаем список сторон с базовыми параметрами (черный цвет, толщина 2)
             clone.Sides = source.Sides.Select(s => new SideStyle(s.RelativeOffset.X, s.RelativeOffset.Y)
