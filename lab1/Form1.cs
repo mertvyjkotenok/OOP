@@ -25,12 +25,14 @@ namespace Lab1
         private List<Figure> currentGroupSelection = new List<Figure>();
         private Dictionary<string, Figure> customTemplates = new Dictionary<string, Figure>();
 
+        private bool isModifyingGroupMode = false;
+        private GroupFigure activeGroupToModify = null;
         public Form1()
         {
             InitializeComponent();
             this.FormBorderStyle = FormBorderStyle.None;
             this.WindowState = FormWindowState.Maximized;
-
+            btnModifyGroup.Click += BtnModifyGroup_Click;
             // Привязка событий кнопок
             btnAddShape.Click += (s, e) => CreateFigureFromUI();
             btnClearAll.Click += (s, e) => {
@@ -54,8 +56,42 @@ namespace Lab1
             canvasPanel.MouseUp += (s, e) => isDragging = false;
         }
 
+        private void BtnModifyGroup_Click(object sender, EventArgs e)
+        {
+            if (selectedFigure is GroupFigure group)
+            {
+                isModifyingGroupMode = true;
+                isDrawingMode = false;
+                isGroupingMode = false;
+                activeGroupToModify = group;
+                MessageBox.Show("Режим редактирования группы.\nЛКМ по отдельной фигуре — добавить в группу.\nЛКМ по фигуре внутри группы — удалить из группы.\nПКМ — завершить.", "Редактирование");
+            }
+            else
+            {
+                MessageBox.Show("Сначала выделите группу для изменения.");
+            }
+        }
+
+        private void UpdateGroupCenter(GroupFigure group)
+        {
+            if (group.SubFigures.Count == 0) return;
+
+            // Находим новые общие границы всех фигур в группе
+            float minX = group.SubFigures.Min(f => f.GetBounds().Left);
+            float maxX = group.SubFigures.Max(f => f.GetBounds().Right);
+            float minY = group.SubFigures.Min(f => f.GetBounds().Top);
+            float maxY = group.SubFigures.Max(f => f.GetBounds().Bottom);
+
+            // Вычисляем новый геометрический центр
+            Point newCenter = new Point((int)(minX + maxX) / 2, (int)(minY + maxY) / 2);
+
+            // Устанавливаем новую базовую точку группы
+            group.BaseLocation = newCenter;
+        }
+
         private void BtnDrawCustom_Click(object sender, EventArgs e)
         {
+            isModifyingGroupMode = false;
             isDrawingMode = true;
             isGroupingMode = false;
             currentDrawPoints.Clear();
@@ -65,6 +101,7 @@ namespace Lab1
 
         private void BtnGroupShapes_Click(object sender, EventArgs e)
         {
+            isModifyingGroupMode = false;
             isGroupingMode = true;
             isDrawingMode = false;
             currentGroupSelection.Clear();
@@ -121,23 +158,55 @@ namespace Lab1
             e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
             using (Pen originPen = new Pen(Color.FromArgb(30, 90, 140), 2))
-            using (SolidBrush textBrush = new SolidBrush(Color.FromArgb(30, 90, 140)))
+            /*using (SolidBrush textBrush = new SolidBrush(Color.FromArgb(30, 90, 140)))
             {
                 e.Graphics.DrawLine(originPen, 0, 0, 30, 0);
                 e.Graphics.DrawLine(originPen, 0, 0, 0, 30);
                 e.Graphics.DrawString("(0, 0)", this.Font, textBrush, 10, 10);
-            }
+            }*/
 
             foreach (var fig in figures) fig.Draw(e.Graphics);
 
             if (selectedFigure != null && !isDrawingMode && !isGroupingMode)
             {
-                using (Pen p = new Pen(Color.Blue, 1) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash })
-                    e.Graphics.DrawEllipse(p, selectedFigure.BaseLocation.X - 5, selectedFigure.BaseLocation.Y - 5, 10, 10);
+                var bounds = selectedFigure.GetBounds();
 
-                RectangleF bounds = selectedFigure.GetBounds();
-                using (Pen borderPen = new Pen(Color.Blue, 1))
-                    e.Graphics.DrawRectangle(borderPen, bounds.X - 2, bounds.Y - 2, bounds.Width + 4, bounds.Height + 4);
+                // Определяем цвет рамки
+                Color selectionColor = Color.Black; // По умолчанию черная
+
+                // Проверяем контур. 
+                // Если это одиночная фигура (PolygonBase), смотрим на цвет её сторон.
+                if (selectedFigure is PolygonBase poly)
+                {
+                    // Если хотя бы одна сторона черная (или основная первая сторона)
+                    if (poly.Sides.Count > 0 &&
+                        poly.Sides[0].Color.R == 0 &&
+                        poly.Sides[0].Color.G == 0 &&
+                        poly.Sides[0].Color.B == 0)
+                    {
+                        selectionColor = Color.DeepSkyBlue; // Если контур черный -> голубая
+                    }
+                }
+                // Если это группа, можно проверять по первой подфигуре или оставить черной
+                else if (selectedFigure is GroupFigure group && group.SubFigures.Count > 0)
+                {
+                    // Пример логики для группы: если у первой фигуры группы черный контур
+                    if (group.SubFigures[0] is PolygonBase firstPoly &&
+                        firstPoly.Sides.Count > 0 &&
+                        firstPoly.Sides[0].Color == Color.Black)
+                    {
+                        selectionColor = Color.DeepSkyBlue;
+                    }
+                }
+
+                using (Pen selectionPen = new Pen(selectionColor, 1))
+                {
+                    selectionPen.DashStyle = System.Drawing.Drawing2D.DashStyle.Dash;
+                    e.Graphics.DrawRectangle(selectionPen, bounds.X, bounds.Y, bounds.Width, bounds.Height);
+                }
+
+                // Отрисовка точки центра (Pivot)
+                e.Graphics.FillEllipse(Brushes.Blue, selectedFigure.Center.X - 3, selectedFigure.Center.Y - 3, 6, 6);
             }
 
             if (isGroupingMode)
@@ -145,6 +214,14 @@ namespace Lab1
                 using (Pen groupPen = new Pen(Color.Red, 2) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash })
                     foreach (var fig in currentGroupSelection)
                         e.Graphics.DrawRectangle(groupPen, fig.GetBounds());
+            }
+
+            if (isModifyingGroupMode && activeGroupToModify != null)
+            {
+                using (Pen editGroupPen = new Pen(Color.Orange, 3) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash })
+                {
+                    e.Graphics.DrawRectangle(editGroupPen, activeGroupToModify.GetBounds());
+                }
             }
 
             // Отрисовка линий в режиме создания
@@ -178,6 +255,53 @@ namespace Lab1
 
         private void CanvasPanel_MouseDown(object sender, MouseEventArgs e)
         {
+            if (isModifyingGroupMode && activeGroupToModify != null)
+            {
+                if (e.Button == MouseButtons.Left)
+                {
+                    // 1. Удаление фигуры из группы
+                    Figure clickedInside = activeGroupToModify.SubFigures.LastOrDefault(f => f.Contains(e.Location));
+                    if (clickedInside != null)
+                    {
+                        activeGroupToModify.SubFigures.Remove(clickedInside);
+                        figures.Add(clickedInside);
+
+                        if (activeGroupToModify.SubFigures.Count == 0)
+                        {
+                            figures.Remove(activeGroupToModify);
+                            selectedFigure = null;
+                            isModifyingGroupMode = false;
+                            activeGroupToModify = null;
+                            MessageBox.Show("В группе не осталось фигур. Группа удалена.");
+                        }
+                        else
+                        {
+                            // ПЕРЕСЧЕТ ЦЕНТРА после удаления
+                            UpdateGroupCenter(activeGroupToModify);
+                        }
+                    }
+                    else
+                    {
+                        // 2. Добавление фигуры в группу
+                        Figure clickedOutside = figures.LastOrDefault(f => f != activeGroupToModify && f.Contains(e.Location));
+                        if (clickedOutside != null)
+                        {
+                            figures.Remove(clickedOutside);
+                            activeGroupToModify.SubFigures.Add(clickedOutside);
+
+                            // ПЕРЕСЧЕТ ЦЕНТРА после добавления
+                            UpdateGroupCenter(activeGroupToModify);
+                        }
+                    }
+                }
+                else if (e.Button == MouseButtons.Right)
+                {
+                    isModifyingGroupMode = false;
+                    activeGroupToModify = null;
+                }
+                canvasPanel.Invalidate();
+                return;
+            }
             if (isDrawingMode)
             {
                 if (e.Button == MouseButtons.Left) currentDrawPoints.Add(e.Location);
@@ -381,6 +505,7 @@ namespace Lab1
         private Button btnDrawCustom;
         private Button btnGroupShapes;
         private Button btnUngroup;
+        private Button btnModifyGroup;
 
         protected override void Dispose(bool disposing)
         {
@@ -408,8 +533,12 @@ namespace Lab1
             btnDrawCustom = new Button { Text = "Нарисовать", Location = new Point(510, 18), Size = new Size(150, 40), BackColor = Color.FromArgb(30, 90, 140), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
             btnGroupShapes = new Button { Text = "Объединить", Location = new Point(670, 18), Size = new Size(150, 40), BackColor = Color.FromArgb(30, 90, 140), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
             btnUngroup = new Button { Text = "Разделить", Location = new Point(830, 18), Size = new Size(150, 40), BackColor = Color.FromArgb(30, 90, 140), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            // Инициализация кнопки изменения
+            btnModifyGroup = new Button { Text = "Изменить", Location = new Point(990, 18), Size = new Size(130, 40), BackColor = Color.FromArgb(30, 90, 140), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
 
-            toolbar.Controls.AddRange(new Control[] { cbShapeType, btnAddShape, btnClearAll, btnDrawCustom, btnGroupShapes, btnUngroup });
+            // Обновленная строка добавления (добавили btnModifyGroup в конец)
+            toolbar.Controls.AddRange(new Control[] { cbShapeType, btnAddShape, btnClearAll, btnDrawCustom, btnGroupShapes, btnUngroup, btnModifyGroup });
+          //  toolbar.Controls.AddRange(new Control[] { cbShapeType, btnAddShape, btnClearAll, btnDrawCustom, btnGroupShapes, btnUngroup });
             canvasPanel = new DoubleBufferedPanel { Dock = DockStyle.Fill, BackColor = Color.WhiteSmoke };
 
             this.Controls.Add(canvasPanel);

@@ -23,16 +23,74 @@ namespace Lab1.Shapes
         public override RectangleF GetBounds()
         {
             var vertices = GetVertices();
-            if (vertices.Length == 0) return new RectangleF(Center.X, Center.Y, 0, 0);
+            int n = vertices.Length;
+            if (n == 0) return new RectangleF(Center.X, Center.Y, 0, 0);
+            if (n == 1)
+            {
+                float h = Sides[0].Thickness / 2f;
+                return new RectangleF(vertices[0].X - h, vertices[0].Y - h, Sides[0].Thickness, Sides[0].Thickness);
+            }
 
-            float minX = vertices.Min(v => v.X);
-            float minY = vertices.Min(v => v.Y);
-            float maxX = vertices.Max(v => v.X);
-            float maxY = vertices.Max(v => v.Y);
+            float minX = float.MaxValue, minY = float.MaxValue;
+            float maxX = float.MinValue, maxY = float.MinValue;
 
-            // Увеличиваем отступ: половина толщины линии + 15 пикселей запаса
-            float padding = (MaxThickness / 2f) + 15f;
-            return new RectangleF(minX - padding, minY - padding, (maxX - minX) + padding * 2, (maxY - minY) + padding * 2);
+            // Подготавливаем данные о направлениях и нормалях (как в методе Draw)
+            Vector2[] dirs = new Vector2[n];
+            Vector2[] normals = new Vector2[n];
+            float[] halfThick = new float[n];
+
+            for (int i = 0; i < n; i++)
+            {
+                int next = (i + 1) % n;
+                Vector2 p1 = new Vector2(vertices[i].X, vertices[i].Y);
+                Vector2 p2 = new Vector2(vertices[next].X, vertices[next].Y);
+                Vector2 d = p2 - p1;
+                float len = d.Length();
+
+                if (len < 0.001f) d = new Vector2(1, 0);
+                else d = Vector2.Normalize(d);
+
+                dirs[i] = d;
+                normals[i] = new Vector2(-d.Y, d.X);
+                halfThick[i] = Sides[i].Thickness / 2f;
+            }
+
+            // Находим внешние точки пересечения для каждого угла
+            for (int i = 0; i < n; i++)
+            {
+                int prev = (i + n - 1) % n;
+
+                // Используем вашу же логику пересечения сторон для нахождения самой дальней точки угла
+                // Параметр true означает внешнюю сторону (outer)
+                PointF outerCorner = GetIntersect(
+                    vertices[i],
+                    dirs[prev], normals[prev], halfThick[prev],
+                    dirs[i], normals[i], halfThick[i],
+                    true
+                );
+
+                // Обновляем границы по этой внешней точке
+                UpdateBounds(outerCorner.X, outerCorner.Y);
+
+                // На всякий случай проверяем и внутреннюю точку (для очень толстых линий и вогнутых фигур)
+                PointF innerCorner = GetIntersect(
+                    vertices[i],
+                    dirs[prev], normals[prev], halfThick[prev],
+                    dirs[i], normals[i], halfThick[i],
+                    false
+                );
+                UpdateBounds(innerCorner.X, innerCorner.Y);
+            }
+
+            void UpdateBounds(float x, float y)
+            {
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+
+            return RectangleF.FromLTRB(minX, minY, maxX, maxY);
         }
 
         public override void Draw(Graphics g)
