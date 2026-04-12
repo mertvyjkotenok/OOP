@@ -46,6 +46,7 @@ namespace Lab1
                 figures.Clear();
                 selectedFigure = null;
                 canvasPanel.Invalidate();
+                UpdateTreeView();
             };
 
             btnDrawCustom.Click += BtnDrawCustom_Click;
@@ -115,6 +116,8 @@ namespace Lab1
                                 Figure fig = MapToFigure(data);
                                 if (fig != null) figures.Add(fig);
                             }
+                            selectedFigure = null;
+                            UpdateTreeView();
                             canvasPanel.Invalidate();
                             MessageBox.Show("Проект успешно загружен!", "Успех");
                         }
@@ -131,6 +134,8 @@ namespace Lab1
         {
             var data = new FigureData
             {
+                Id = f.Id.ToString(),
+                Name = f.Name,
                 TypeName = f.GetType().Name,
                 BaseX = f.BaseLocation.X,
                 BaseY = f.BaseLocation.Y,
@@ -198,6 +203,11 @@ namespace Lab1
                 f.RelativePivot = new PointF(data.RelX, data.RelY);
                 f.Size = data.Size;
                 f.FillColor = Color.FromArgb(data.FillColorArgb);
+                if (Guid.TryParse(data.Id, out Guid savedId))
+                {
+                    f.Id = savedId;
+                }
+                f.Name = data.Name;
 
                 f.Sides.Clear();
                 foreach (var sData in data.Sides)
@@ -229,6 +239,10 @@ namespace Lab1
         {
             if (figures.Contains(fig))
             {
+                if (fig is GroupFigure groupFig)
+                {
+                    RemoveTemplateIfExist(groupFig.Name);
+                }
                 figures.Remove(fig);
             }
             else
@@ -240,7 +254,16 @@ namespace Lab1
                     {
                         group.SubFigures.Remove(fig);
                         // Если группа стала пустой, удаляем и её
-                        if (group.SubFigures.Count == 0) figures.Remove(group);
+                        if (group.SubFigures.Count == 0)
+                        {
+                            RemoveTemplateIfExist(group.Name); // Чистим шаблон пустой группы
+                            figures.Remove(group);
+                        }
+                        else
+                        {
+                            // Если в группе еще есть фигуры, обновляем её центр
+                            UpdateGroupCenter(group);
+                        }
                         break;
                     }
                 }
@@ -248,6 +271,7 @@ namespace Lab1
 
             if (selectedFigure == fig) selectedFigure = null;
             HighlightedSideIndex = -1;
+            UpdateTreeView();
             canvasPanel.Invalidate();
         }
 
@@ -286,13 +310,26 @@ namespace Lab1
         {
             if (selectedFigure is GroupFigure group)
             {
-                foreach (var subFig in group.SubFigures) figures.Add(subFig);
+                // 1. Убираем название из списка шаблонов
+                RemoveTemplateIfExist(group.Name);
+
+                // 2. Возвращаем подфигуры на холст
+                foreach (var subFig in group.SubFigures)
+                    figures.Add(subFig);
+
+                // 3. Удаляем саму группу
                 figures.Remove(group);
                 selectedFigure = null;
+
+                // 4. Обновляем интерфейс
+                UpdateTreeView();
                 canvasPanel.Invalidate();
-                MessageBox.Show("Группа разделена на части.");
+                MessageBox.Show("Группа разделена, шаблон удален.");
             }
-            else MessageBox.Show("Выберите группу для разделения.");
+            else
+            {
+                MessageBox.Show("Выберите группу для разделения.");
+            }
         }
 
         private void CreateFigureFromUI()
@@ -303,7 +340,13 @@ namespace Lab1
             string selectedType = cbShapeType.SelectedItem.ToString();
 
             if (customTemplates.ContainsKey(selectedType))
+            {
+                // Твой текущий вызов клонирования
                 f = CloneFigure(customTemplates[selectedType], center, customTemplates[selectedType].BaseLocation);
+
+                // ДОБАВЛЯЕМ: Присваиваем имя из ключа словаря (то самое название, что ты вводил)
+                f.Name = selectedType;
+            }
             else
             {
                 switch (selectedType)
@@ -316,7 +359,7 @@ namespace Lab1
                 }
             }
 
-            if (f != null) { figures.Add(f); selectedFigure = f; canvasPanel.Invalidate(); }
+            if (f != null) { figures.Add(f); selectedFigure = f; UpdateTreeView(); canvasPanel.Invalidate(); }
         }
 
         private void CanvasPanel_Paint(object sender, PaintEventArgs e)
@@ -408,6 +451,7 @@ namespace Lab1
 
         private void CanvasPanel_MouseDown(object sender, MouseEventArgs e)
         {
+            // --- РЕЖИМ МОДИФИКАЦИИ ГРУППЫ ---
             if (isModifyingGroupMode && activeGroupToModify != null)
             {
                 if (e.Button == MouseButtons.Left)
@@ -415,6 +459,7 @@ namespace Lab1
                     Figure clickedInside = activeGroupToModify.SubFigures.LastOrDefault(f => f.Contains(e.Location));
                     if (clickedInside != null)
                     {
+                        // Извлекаем фигуру из группы
                         activeGroupToModify.SubFigures.Remove(clickedInside);
                         figures.Add(clickedInside);
 
@@ -424,49 +469,71 @@ namespace Lab1
                             selectedFigure = null;
                             isModifyingGroupMode = false;
                             activeGroupToModify = null;
+                            SelectNodeByFigure(null); // Снимаем выделение в дереве
                             MessageBox.Show("В группе не осталось фигур. Группа удалена.");
                         }
-                        else UpdateGroupCenter(activeGroupToModify);
+                        else
+                        {
+                            UpdateGroupCenter(activeGroupToModify);
+                            selectedFigure = clickedInside; // Выделяем извлеченную фигуру
+                            SelectNodeByFigure(selectedFigure);
+                        }
+                        UpdateTreeView();
                     }
                     else
                     {
+                        // Добавляем фигуру в группу
                         Figure clickedOutside = figures.LastOrDefault(f => f != activeGroupToModify && f.Contains(e.Location));
                         if (clickedOutside != null)
                         {
                             figures.Remove(clickedOutside);
                             activeGroupToModify.SubFigures.Add(clickedOutside);
                             UpdateGroupCenter(activeGroupToModify);
+
+                            selectedFigure = activeGroupToModify;
+                            SelectNodeByFigure(selectedFigure);
+                            UpdateTreeView();
                         }
                     }
                 }
-                else if (e.Button == MouseButtons.Right) 
+                else if (e.Button == MouseButtons.Right)
                 {
                     Figure clickedInside = activeGroupToModify.SubFigures.LastOrDefault(f => f.Contains(e.Location));
                     if (clickedInside != null)
                     {
-                        // Открываем редактор только для одной фигуры из группы!
+                        selectedFigure = clickedInside;
+                        SelectNodeByFigure(selectedFigure); // Подсвечиваем подфигуру в списке
+
                         if (currentEditor != null && !currentEditor.IsDisposed) currentEditor.Close();
                         currentEditor = new EditorForm(clickedInside, this, canvasPanel) { Owner = this };
                         currentEditor.Show();
                     }
                     else
                     {
-                        // Если кликнули мимо фигур - выходим из режима редактирования
+                        // Выход из режима модификации группы
                         isModifyingGroupMode = false;
                         activeGroupToModify = null;
+                        SelectNodeByFigure(null);
                     }
                 }
                 canvasPanel.Invalidate();
                 return;
             }
 
+            // --- РЕЖИМ РИСОВАНИЯ (CUSTOM) ---
             if (isDrawingMode)
             {
                 if (e.Button == MouseButtons.Left) currentDrawPoints.Add(e.Location);
-                else if (e.Button == MouseButtons.Right && currentDrawPoints.Count > 2) FinishCustomDrawing();
-                canvasPanel.Invalidate(); return;
+                else if (e.Button == MouseButtons.Right && currentDrawPoints.Count > 2)
+                {
+                    FinishCustomDrawing();
+                    SelectNodeByFigure(selectedFigure); // Выделяем новую созданную фигуру в списке
+                }
+                canvasPanel.Invalidate();
+                return;
             }
 
+            // --- РЕЖИМ ГРУППИРОВКИ ---
             if (isGroupingMode)
             {
                 if (e.Button == MouseButtons.Left)
@@ -476,17 +543,32 @@ namespace Lab1
                     {
                         if (currentGroupSelection.Contains(clicked)) currentGroupSelection.Remove(clicked);
                         else currentGroupSelection.Add(clicked);
+
+                        selectedFigure = clicked;
+                        SelectNodeByFigure(selectedFigure); // Визуально отмечаем в списке, что выбираем
                     }
                 }
-                else if (e.Button == MouseButtons.Right) FinishGrouping();
-                canvasPanel.Invalidate(); return;
+                else if (e.Button == MouseButtons.Right)
+                {
+                    FinishGrouping();
+                    SelectNodeByFigure(selectedFigure); // Выделяем созданную группу
+                }
+                canvasPanel.Invalidate();
+                return;
             }
 
+            // --- ОБЫЧНЫЙ РЕЖИМ (ВЫДЕЛЕНИЕ И ПЕРЕМЕЩЕНИЕ) ---
             Figure hitFig = figures.LastOrDefault(f => f.Contains(e.Location));
             if (hitFig != null)
             {
                 selectedFigure = hitFig;
-                if (e.Button == MouseButtons.Left) { isDragging = true; lastMousePos = e.Location; }
+                SelectNodeByFigure(selectedFigure); // СИНХРОНИЗАЦИЯ: подсвечиваем в TreeView
+
+                if (e.Button == MouseButtons.Left)
+                {
+                    isDragging = true;
+                    lastMousePos = e.Location;
+                }
                 else if (e.Button == MouseButtons.Right)
                 {
                     if (currentEditor != null && !currentEditor.IsDisposed) currentEditor.Close();
@@ -497,8 +579,10 @@ namespace Lab1
             else
             {
                 selectedFigure = null;
-                HighlightedSideIndex = -1; // Сброс подсветки при клике в пустое место
+                HighlightedSideIndex = -1;
+                SelectNodeByFigure(null); // СИНХРОНИЗАЦИЯ: снимаем выделение в TreeView
             }
+
             canvasPanel.Invalidate();
         }
 
@@ -546,6 +630,7 @@ namespace Lab1
 
                 figures.Add(newFig);
                 selectedFigure = newFig;
+                UpdateTreeView();
             }
 
             isDrawingMode = false;
@@ -566,6 +651,7 @@ namespace Lab1
 
                 Point groupCenter = new Point((int)(minX + maxX) / 2, (int)(minY + maxY) / 2);
                 GroupFigure group = new GroupFigure(groupCenter);
+                group.Name = name;
 
                 foreach (var f in currentGroupSelection)
                 {
@@ -577,6 +663,7 @@ namespace Lab1
                 cbShapeType.Items.Add(name);
                 figures.Add(group);
                 selectedFigure = group;
+                UpdateTreeView();
             }
             isGroupingMode = false;
             currentGroupSelection.Clear();
@@ -618,6 +705,136 @@ namespace Lab1
             return clone;
         }
 
+        // НОВОЕ: Методы для работы со списком фигур (TreeView)
+        public void UpdateTreeView()
+        {
+            tvFigures.Nodes.Clear();
+            foreach (var fig in figures)
+            {
+                AddFigureToNode(fig, tvFigures.Nodes);
+            }
+            tvFigures.ExpandAll(); // Раскрываем все группы для удобства
+        }
+
+        private void AddFigureToNode(Figure fig, TreeNodeCollection nodes)
+        {
+            // Создаем узел с понятным именем
+            TreeNode node = new TreeNode(GetFigureReadableName(fig));
+            node.Tag = fig; // Важно! Привязываем саму фигуру к узлу, чтобы потом её найти
+            nodes.Add(node);
+
+            // Если это группа, рекурсивно добавляем её подфигуры
+            if (fig is GroupFigure group)
+            {
+                foreach (var subFig in group.SubFigures)
+                {
+                    AddFigureToNode(subFig, node.Nodes);
+                }
+            }
+        }
+
+        private string GetFigureReadableName(Figure fig)
+        {
+            // Берем имя или стандартный тип
+            string displayName = !string.IsNullOrEmpty(fig.Name) ? fig.Name : GetDefaultTypeName(fig);
+
+            // Добавляем ID в скобках (берем первые 8 символов для компактности)
+            string shortId = fig.Id.ToString().Substring(0, 8);
+
+            return $"{displayName} [{shortId}]";
+        }
+
+        // Вспомогательный метод для определения типа по умолчанию
+        private string GetDefaultTypeName(Figure fig)
+        {
+            if (fig is GroupFigure) return "Группа";
+            if (fig is CustomPolygon) return "Своя фигура";
+
+            switch (fig.GetType().Name)
+            {
+                case "Rectangle": return "Прямоугольник";
+                case "Triangle": return "Треугольник";
+                case "Circle": return "Круг";
+                case "Trapezium": return "Трапеция";
+                case "Pentagon": return "Пятиугольник";
+                default: return fig.GetType().Name;
+            }
+        }
+        private void RemoveTemplateIfExist(string name)
+        {
+            // Проверяем, что это не стандартная фигура (их удалять нельзя)
+            string[] standardShapes = { "Прямоугольник", "Треугольник", "Круг", "Трапеция", "Пятиугольник" };
+
+            if (!string.IsNullOrEmpty(name) && !standardShapes.Contains(name))
+            {
+                if (customTemplates.ContainsKey(name))
+                {
+                    customTemplates.Remove(name);
+                    cbShapeType.Items.Remove(name);
+
+                    // Если удалили выбранный элемент, сбрасываем индекс на первый (Прямоугольник)
+                    if (cbShapeType.SelectedIndex == -1)
+                        cbShapeType.SelectedIndex = 0;
+                }
+            }
+        }
+        // Выделение фигуры при клике в списке
+        private void TvFigures_AfterSelect(object sender, TreeViewEventArgs e)
+        {
+            if (e.Node.Tag is Figure fig)
+            {
+                selectedFigure = fig;
+                HighlightedSideIndex = -1; // Сбрасываем выделение стороны
+                canvasPanel.Invalidate();
+            }
+        }
+
+        // Метод для выделения узла в дереве при клике на фигуру на холсте
+        private void SelectNodeByFigure(Figure fig)
+        {
+            if (fig == null)
+            {
+                tvFigures.SelectedNode = null;
+                return;
+            }
+
+            // Ищем узел рекурсивно
+            TreeNode node = FindNodeByTag(tvFigures.Nodes, fig);
+            if (node != null)
+            {
+                tvFigures.SelectedNode = node;
+                node.EnsureVisible(); // Прокручиваем список к узлу, если он скрыт
+            }
+        }
+
+        private TreeNode FindNodeByTag(TreeNodeCollection nodes, object tag)
+        {
+            foreach (TreeNode node in nodes)
+            {
+                if (node.Tag == tag) return node;
+                TreeNode child = FindNodeByTag(node.Nodes, tag);
+                if (child != null) return child;
+            }
+            return null;
+        }
+
+        private void TvFigures_AfterLabelEdit(object sender, NodeLabelEditEventArgs e)
+        {
+            // Если пользователь не отменил ввод и ввел текст
+            if (e.Label != null && !string.IsNullOrWhiteSpace(e.Label))
+            {
+                if (e.Node.Tag is Figure fig)
+                {
+                    fig.Name = e.Label;
+
+                    // Отменяем стандартное изменение текста узла, 
+                    // так как UpdateTreeView сам перерисует его красиво с ID
+                    e.CancelEdit = true;
+                    UpdateTreeView();
+                }
+            }
+        }
+
         public static string ShowInputDialog(string text, string caption)
         {
             Form prompt = new Form() { Width = 300, Height = 160, Text = caption, StartPosition = FormStartPosition.CenterScreen };
@@ -643,6 +860,9 @@ namespace Lab1
         private Button btnModifyGroup;
         private Button btnSave;
         private Button btnLoad;
+        private Panel rightPanel;
+        private TreeView tvFigures;
+        private Label lblTree;
 
         protected override void Dispose(bool disposing)
         {
@@ -675,10 +895,21 @@ namespace Lab1
             btnLoad = new Button { Text = "Загрузить", Location = new Point(1270, 18), Size = new Size(130, 40), BackColor = Color.FromArgb(60, 120, 170), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
 
             toolbar.Controls.AddRange(new Control[] { cbShapeType, btnAddShape, btnClearAll, btnDrawCustom, btnGroupShapes, btnUngroup, btnModifyGroup, btnSave, btnLoad });
+            rightPanel = new Panel { Dock = DockStyle.Right, Width = 250, BackColor = Color.FromArgb(100, 160, 210), Padding = new Padding(5) };
+            lblTree = new Label { Text = "Список фигур", Dock = DockStyle.Top, Height = 30, TextAlign = ContentAlignment.MiddleCenter, Font = new Font("Segoe UI", 12F, FontStyle.Bold) };
+            tvFigures = new TreeView { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 12F), HideSelection = false };
 
+            // Обработчик: при клике на фигуру в списке, она выделяется на холсте
+            tvFigures.AfterSelect += TvFigures_AfterSelect;
+            tvFigures.LabelEdit = true; // Разрешаем редактировать текст узлов
+            tvFigures.AfterLabelEdit += TvFigures_AfterLabelEdit; // Событие после переименования
+
+            rightPanel.Controls.Add(tvFigures);
+            rightPanel.Controls.Add(lblTree);
             canvasPanel = new DoubleBufferedPanel { Dock = DockStyle.Fill, BackColor = Color.WhiteSmoke };
 
             this.Controls.Add(canvasPanel);
+            this.Controls.Add(rightPanel);
             this.Controls.Add(toolbar);
         }
     }
@@ -694,6 +925,8 @@ namespace Lab1
 
     public class FigureData
     {
+        public string Id { get; set; }
+        public string Name { get; set; }
         public string TypeName { get; set; }
         public int BaseX { get; set; }
         public int BaseY { get; set; }

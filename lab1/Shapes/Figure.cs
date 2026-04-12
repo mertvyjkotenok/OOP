@@ -6,6 +6,8 @@ namespace Lab1.Shapes
 {
     public abstract class Figure
     {
+        public Guid Id { get; set; } = Guid.NewGuid();
+        public string Name { get; set; }
         public int Size { get; set; } = 100;
 
         // Это абсолютная точка привязки (Anchor) на холсте
