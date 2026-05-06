@@ -10,25 +10,21 @@ namespace Lab1.Shapes
         public string Name { get; set; }
         public int Size { get; set; } = 100;
 
-        // Это абсолютная точка привязки (Anchor) на холсте
         public Point BaseLocation { get; set; }
-
-        // Относительное смещение точки привязки от геометрического центра
         public PointF RelativePivot { get; set; } = new PointF(0, 0);
+        public float Rotation { get; set; } = 0f;
 
-        // Геометрический (визуальный) центр фигуры. Используется для отрисовки.
         public Point Center
         {
             get => new Point(
-                BaseLocation.X - (int)RelativePivot.X, // ИЗМЕНЕНО: теперь мы вычитаем
-                BaseLocation.Y - (int)RelativePivot.Y  // ИЗМЕНЕНО: теперь мы вычитаем
+                BaseLocation.X - (int)RelativePivot.X,
+                BaseLocation.Y - (int)RelativePivot.Y
             );
             set
             {
-                // Если мы смещаем всю фигуру целиком, точка привязки смещается вместе с ней
                 BaseLocation = new Point(
-                    value.X + (int)RelativePivot.X, // ИЗМЕНЕНО: теперь мы прибавляем
-                    value.Y + (int)RelativePivot.Y  // ИЗМЕНЕНО: теперь мы прибавляем
+                    value.X + (int)RelativePivot.X,
+                    value.Y + (int)RelativePivot.Y
                 );
             }
         }
@@ -36,6 +32,8 @@ namespace Lab1.Shapes
         public List<SideStyle> Sides { get; set; } = new List<SideStyle>();
         public Color FillColor { get; set; } = Color.Transparent;
         public float MaxThickness => Sides.Count > 0 ? Sides.Max(s => s.Thickness) : 0;
+
+        protected Figure() { } // для создания без параметров (если нужно)
 
         public Figure(Point center)
         {

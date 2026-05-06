@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Linq;
@@ -6,9 +7,19 @@ using System.Numerics;
 
 namespace Lab1.Shapes
 {
-    public abstract class PolygonBase : Figure
+    public class Polygon : Figure
     {
-        protected PolygonBase(Point center) : base(center) { }
+        // Конструктор с центром и относительными вершинами
+        public Polygon(Point center, IEnumerable<PointF> vertices) : base(center)
+        {
+            Sides = vertices.Select(v => new SideStyle(v.X, v.Y)).ToList();
+        }
+
+        // Пустой конструктор
+        public Polygon() : this(Point.Empty, new List<PointF>()) { }
+
+        // Конструктор только с центром (вершины задаются позже)
+        public Polygon(Point center) : base(center) { }
 
         public PointF[] GetVertices()
         {
@@ -19,7 +30,6 @@ namespace Lab1.Shapes
             )).ToArray();
         }
 
-        // НОВОЕ: Реализация границ для полигонов
         public override RectangleF GetBounds()
         {
             var vertices = GetVertices();
@@ -34,7 +44,6 @@ namespace Lab1.Shapes
             float minX = float.MaxValue, minY = float.MaxValue;
             float maxX = float.MinValue, maxY = float.MinValue;
 
-            // Подготавливаем данные о направлениях и нормалях (как в методе Draw)
             Vector2[] dirs = new Vector2[n];
             Vector2[] normals = new Vector2[n];
             float[] halfThick = new float[n];
@@ -46,48 +55,30 @@ namespace Lab1.Shapes
                 Vector2 p2 = new Vector2(vertices[next].X, vertices[next].Y);
                 Vector2 d = p2 - p1;
                 float len = d.Length();
-
-                if (len < 0.001f) d = new Vector2(1, 0);
-                else d = Vector2.Normalize(d);
-
+                d = len < 0.001f ? new Vector2(1, 0) : Vector2.Normalize(d);
                 dirs[i] = d;
                 normals[i] = new Vector2(-d.Y, d.X);
                 halfThick[i] = Sides[i].Thickness / 2f;
             }
 
-            // Находим внешние точки пересечения для каждого угла
             for (int i = 0; i < n; i++)
             {
                 int prev = (i + n - 1) % n;
+                PointF outer = GetIntersect(vertices[i], dirs[prev], normals[prev], halfThick[prev],
+                                            dirs[i], normals[i], halfThick[i], true);
+                PointF inner = GetIntersect(vertices[i], dirs[prev], normals[prev], halfThick[prev],
+                                            dirs[i], normals[i], halfThick[i], false);
 
-                // Используем вашу же логику пересечения сторон для нахождения самой дальней точки угла
-                // Параметр true означает внешнюю сторону (outer)
-                PointF outerCorner = GetIntersect(
-                    vertices[i],
-                    dirs[prev], normals[prev], halfThick[prev],
-                    dirs[i], normals[i], halfThick[i],
-                    true
-                );
-
-                // Обновляем границы по этой внешней точке
-                UpdateBounds(outerCorner.X, outerCorner.Y);
-
-                // На всякий случай проверяем и внутреннюю точку (для очень толстых линий и вогнутых фигур)
-                PointF innerCorner = GetIntersect(
-                    vertices[i],
-                    dirs[prev], normals[prev], halfThick[prev],
-                    dirs[i], normals[i], halfThick[i],
-                    false
-                );
-                UpdateBounds(innerCorner.X, innerCorner.Y);
+                UpdateBounds(outer);
+                UpdateBounds(inner);
             }
 
-            void UpdateBounds(float x, float y)
+            void UpdateBounds(PointF p)
             {
-                if (x < minX) minX = x;
-                if (x > maxX) maxX = x;
-                if (y < minY) minY = y;
-                if (y > maxY) maxY = y;
+                if (p.X < minX) minX = p.X;
+                if (p.X > maxX) maxX = p.X;
+                if (p.Y < minY) minY = p.Y;
+                if (p.Y > maxY) maxY = p.Y;
             }
 
             return RectangleF.FromLTRB(minX, minY, maxX, maxY);
@@ -141,8 +132,10 @@ namespace Lab1.Shapes
                 }
                 else
                 {
-                    outer[i] = GetIntersect(pts[i], dirs[prev], normals[prev], halfThick[prev], dirs[curr], normals[curr], halfThick[curr], true);
-                    inner[i] = GetIntersect(pts[i], dirs[prev], normals[prev], halfThick[prev], dirs[curr], normals[curr], halfThick[curr], false);
+                    outer[i] = GetIntersect(pts[i], dirs[prev], normals[prev], halfThick[prev],
+                                            dirs[curr], normals[curr], halfThick[curr], true);
+                    inner[i] = GetIntersect(pts[i], dirs[prev], normals[prev], halfThick[prev],
+                                            dirs[curr], normals[curr], halfThick[curr], false);
                 }
             }
 
@@ -155,7 +148,8 @@ namespace Lab1.Shapes
             }
         }
 
-        private PointF GetIntersect(PointF P, Vector2 d1, Vector2 n1, float h1, Vector2 d2, Vector2 n2, float h2, bool isOuter)
+        private PointF GetIntersect(PointF P, Vector2 d1, Vector2 n1, float h1,
+                                    Vector2 d2, Vector2 n2, float h2, bool isOuter)
         {
             float s = isOuter ? 1 : -1;
             Vector2 P1 = new Vector2(P.X, P.Y) + n1 * h1 * s;

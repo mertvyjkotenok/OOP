@@ -5,7 +5,6 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Windows.Forms;
-using Lab1.Figures;
 using Lab1.Shapes;
 
 namespace Lab1
@@ -18,10 +17,8 @@ namespace Lab1
         private Point lastMousePos;
         private EditorForm currentEditor = null;
 
-        // НОВОЕ: Переменная для хранения индекса подсвеченной стороны
         public int HighlightedSideIndex { get; set; } = -1;
 
-        // Режимы работы
         private bool isDrawingMode = false;
         private List<Point> currentDrawPoints = new List<Point>();
         private Point currentMouseHoverPos;
@@ -32,6 +29,20 @@ namespace Lab1
 
         private bool isModifyingGroupMode = false;
         private GroupFigure activeGroupToModify = null;
+
+        private enum HandleType
+        {
+            None, Move, ResizeN, ResizeS, ResizeE, ResizeW,
+            ResizeNE, ResizeNW, ResizeSE, ResizeSW, Rotate,
+            Focus1, Focus2
+        }
+        private HandleType activeHandle = HandleType.None;
+        private PointF handleStartMouse;
+        private RectangleF handleStartBounds;
+        private float handleStartRotation;
+        private float handleStartRadiusX, handleStartRadiusY;
+
+        private const int HandleSize = 10;
 
         public Form1()
         {
@@ -48,12 +59,9 @@ namespace Lab1
                 canvasPanel.Invalidate();
                 UpdateTreeView();
             };
-
-            btnDrawCustom.Click += BtnDrawCustom_Click;
             btnGroupShapes.Click += BtnGroupShapes_Click;
             btnUngroup.Click += BtnUngroup_Click;
-
-            btnSave.Click += BtnSave_Click;
+           
             btnLoad.Click += BtnLoad_Click;
 
             this.KeyDown += (s, e) => {
@@ -64,16 +72,18 @@ namespace Lab1
             canvasPanel.MouseDown += CanvasPanel_MouseDown;
             canvasPanel.MouseMove += CanvasPanel_MouseMove;
             canvasPanel.MouseUp += (s, e) => isDragging = false;
+            canvasPanel.MouseUp += CanvasPanel_MouseUp;
         }
 
         private void BtnSave_Click(object sender, EventArgs e)
         {
             using (SaveFileDialog sfd = new SaveFileDialog())
             {
+                sfd.AutoUpgradeEnabled = false;
                 sfd.Filter = "JSON файлы (*.json)|*.json|Текстовые файлы (*.txt)|*.txt|Все файлы (*.*)|*.*";
                 sfd.Title = "Сохранить проект";
-
-                if (sfd.ShowDialog() == DialogResult.OK)
+                
+                if (sfd.ShowDialog(this) == DialogResult.OK)
                 {
                     try
                     {
@@ -95,38 +105,126 @@ namespace Lab1
         {
             using (OpenFileDialog ofd = new OpenFileDialog())
             {
-                ofd.Filter = "JSON файлы (*.json)|*.json|Текстовые файлы (*.txt)|*.txt|Все файлы (*.*)|*.*";
-                ofd.Title = "Загрузить проект";
-
+                ofd.AutoUpgradeEnabled = false;
+                ofd.Filter = "JSON файлы (*.json)|*.json";
                 if (ofd.ShowDialog() == DialogResult.OK)
                 {
                     try
                     {
-                        string json = File.ReadAllText(ofd.FileName);
-                        List<FigureData> dataList = JsonSerializer.Deserialize<List<FigureData>>(json);
+                        string json = File.ReadAllText(ofd.FileName).Trim();
+                        List<FigureData> dataToProcess = new List<FigureData>();
 
-                        if (dataList != null)
+                        if (json.StartsWith("["))
                         {
-                            figures.Clear();
-                            selectedFigure = null;
-                            HighlightedSideIndex = -1; // Сбрасываем выделение
+                            dataToProcess = JsonSerializer.Deserialize<List<FigureData>>(json);
+                        }
+                        else
+                        {
+                            var single = JsonSerializer.Deserialize<FigureData>(json);
+                            if (single != null) dataToProcess.Add(single);
+                        }
 
-                            foreach (var data in dataList)
+                        if (dataToProcess != null)
+                        {
+                            foreach (var data in dataToProcess)
                             {
                                 Figure fig = MapToFigure(data);
-                                if (fig != null) figures.Add(fig);
+                                if (fig != null)
+                                {
+                                    if (figures.Count > 0) fig.Move(20, 20);
+                                    figures.Add(fig);
+                                }
                             }
-                            selectedFigure = null;
                             UpdateTreeView();
                             canvasPanel.Invalidate();
-                            MessageBox.Show("Проект успешно загружен!", "Успех");
+                            MessageBox.Show($"Добавлено объектов: {dataToProcess.Count}");
                         }
                     }
                     catch (Exception ex)
                     {
-                        MessageBox.Show("Ошибка при загрузке: " + ex.Message, "Ошибка");
+                        MessageBox.Show("Ошибка загрузки: " + ex.Message);
                     }
                 }
+            }
+        }
+
+        private void BtnSaveSelected_Click(object sender, EventArgs e)
+        {
+            // Определяем список фигур для сохранения
+            List<Figure> toSave = new List<Figure>();
+
+            // 1. Сначала собираем все фигуры, отмеченные галочками в списке (TreeView)
+            CollectCheckedFigures(tvFigures.Nodes, toSave);
+
+            // 2. Если галочки не расставлены, проверяем режим объединения
+            if (toSave.Count == 0 && isGroupingMode && currentGroupSelection.Count > 0)
+            {
+                toSave.AddRange(currentGroupSelection);
+            }
+            // 3. Если и там пусто, берем просто выделенную на холсте фигуру
+            else if (toSave.Count == 0 && selectedFigure != null)
+            {
+                toSave.Add(selectedFigure);
+            }
+
+            // Если вообще ничего не выбрано, предупреждаем пользователя
+            if (toSave.Count == 0)
+            {
+                MessageBox.Show("Сначала выберите одну или несколько фигур (отметьте галочкой в списке).", "Внимание");
+                return;
+            }
+
+            using (SaveFileDialog sfd = new SaveFileDialog())
+            {
+                sfd.AutoUpgradeEnabled = false;
+                sfd.Filter = "JSON фигуры (*.json)|*.json";
+                sfd.Title = "Сохранить выбранные фигуры";
+
+                // Предлагаем имя файла по первой фигуре или общее
+                sfd.FileName = toSave.Count == 1 ? (toSave[0].Name ?? "Figure") : "SelectedShapes";
+
+                if (sfd.ShowDialog() == DialogResult.OK)
+                {
+                    try
+                    {
+                        // Преобразуем список фигур в список данных для JSON
+                        List<FigureData> dataList = toSave.Select(MapToData).ToList();
+
+                        var options = new JsonSerializerOptions
+                        {
+                            WriteIndented = true,
+                            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                        };
+
+                        string json = JsonSerializer.Serialize(dataList, options);
+                        File.WriteAllText(sfd.FileName, json);
+
+                        MessageBox.Show($"Успешно сохранено объектов: {toSave.Count}", "Успех");
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show("Ошибка при сохранении: " + ex.Message, "Ошибка");
+                    }
+                }
+            }
+        }
+
+        private void CollectCheckedFigures(TreeNodeCollection nodes, List<Figure> toSave)
+        {
+            foreach (TreeNode node in nodes)
+            {
+                // Если узел отмечен галочкой и содержит фигуру
+                if (node.Checked && node.Tag is Figure fig)
+                {
+                    toSave.Add(fig);
+                    // Если мы сохраняем группу целиком, нам не нужно дублировать и сохранять 
+                    // её отдельные внутренние элементы, поэтому пропускаем их
+                    continue;
+                }
+
+                // Если текущий узел не отмечен (или это развернутая группа), 
+                // рекурсивно проверяем вложенные элементы
+                CollectCheckedFigures(node.Nodes, toSave);
             }
         }
 
@@ -146,20 +244,18 @@ namespace Lab1
                 Sides = new List<SideData>()
             };
 
-            // НОВОЕ: Высчитываем длину стороны для удобного чтения JSON
             for (int i = 0; i < f.Sides.Count; i++)
             {
                 var currentSide = f.Sides[i];
                 var nextSide = f.Sides[(i + 1) % f.Sides.Count];
 
-                // Считаем расстояние между вершинами (используем теорему Пифагора)
                 float dx = nextSide.RelativeOffset.X - currentSide.RelativeOffset.X;
                 float dy = nextSide.RelativeOffset.Y - currentSide.RelativeOffset.Y;
                 double length = Math.Round(Math.Sqrt(dx * dx + dy * dy), 2);
 
                 data.Sides.Add(new SideData
                 {
-                    Info = $"Сторона {i + 1}: длина {length}, толщина {currentSide.Thickness}", // Понятное описание!
+                    Info = $"Сторона {i + 1}: длина {length}, толщина {currentSide.Thickness}",
                     ColorArgb = currentSide.Color.ToArgb(),
                     Thickness = currentSide.Thickness,
                     RelOffsetX = currentSide.RelativeOffset.X,
@@ -181,12 +277,15 @@ namespace Lab1
 
             switch (data.TypeName)
             {
-                case "Rectangle": f = new Lab1.Figures.Rectangle(baseLoc); break;
-                case "Triangle": f = new Triangle(baseLoc); break;
-                case "Circle": f = new Circle(baseLoc); break;
-                case "Trapezium": f = new Trapezium(baseLoc); break;
-                case "Pentagon": f = new Pentagon(baseLoc); break;
-                case "CustomPolygon": f = new CustomPolygon(baseLoc); break;
+                case "Polygon":
+                    var vertices = data.Sides.Select(s => new PointF(s.RelOffsetX, s.RelOffsetY)).ToArray();
+                    f = new Polygon(baseLoc, vertices);
+                    break;
+                case "Ellipse":
+                    float rx = data.Sides.Count > 0 ? data.Sides[0].RelOffsetX : 50;
+                    float ry = data.Sides.Count > 0 ? data.Sides[0].RelOffsetY : 50;
+                    f = new Ellipse(baseLoc, rx, ry);
+                    break;
                 case "GroupFigure":
                     var group = new GroupFigure(baseLoc);
                     foreach (var subData in data.SubFigures)
@@ -196,6 +295,11 @@ namespace Lab1
                     }
                     f = group;
                     break;
+                default:
+                    // Для обратной совместимости со старыми сохранениями (если есть)
+                    // Можно добавить обработку старых типов или просто пропустить
+                    MessageBox.Show($"Неизвестный тип фигуры: {data.TypeName}. Фигура будет пропущена.");
+                    return null;
             }
 
             if (f != null)
@@ -203,10 +307,7 @@ namespace Lab1
                 f.RelativePivot = new PointF(data.RelX, data.RelY);
                 f.Size = data.Size;
                 f.FillColor = Color.FromArgb(data.FillColorArgb);
-                if (Guid.TryParse(data.Id, out Guid savedId))
-                {
-                    f.Id = savedId;
-                }
+                
                 f.Name = data.Name;
 
                 f.Sides.Clear();
@@ -247,21 +348,18 @@ namespace Lab1
             }
             else
             {
-                // Если фигуры нет в главном списке, ищем её внутри групп
                 foreach (var group in figures.OfType<GroupFigure>().ToList())
                 {
                     if (group.SubFigures.Contains(fig))
                     {
                         group.SubFigures.Remove(fig);
-                        // Если группа стала пустой, удаляем и её
                         if (group.SubFigures.Count == 0)
                         {
-                            RemoveTemplateIfExist(group.Name); // Чистим шаблон пустой группы
+                            RemoveTemplateIfExist(group.Name);
                             figures.Remove(group);
                         }
                         else
                         {
-                            // Если в группе еще есть фигуры, обновляем её центр
                             UpdateGroupCenter(group);
                         }
                         break;
@@ -286,16 +384,6 @@ namespace Lab1
             group.BaseLocation = newCenter;
         }
 
-        private void BtnDrawCustom_Click(object sender, EventArgs e)
-        {
-            isModifyingGroupMode = false;
-            isDrawingMode = true;
-            isGroupingMode = false;
-            currentDrawPoints.Clear();
-            selectedFigure = null;
-            MessageBox.Show("Режим рисования включен.\nЛКМ - точки, ПКМ - завершить.", "Рисование");
-        }
-
         private void BtnGroupShapes_Click(object sender, EventArgs e)
         {
             isModifyingGroupMode = false;
@@ -310,18 +398,14 @@ namespace Lab1
         {
             if (selectedFigure is GroupFigure group)
             {
-                // 1. Убираем название из списка шаблонов
                 RemoveTemplateIfExist(group.Name);
 
-                // 2. Возвращаем подфигуры на холст
                 foreach (var subFig in group.SubFigures)
                     figures.Add(subFig);
 
-                // 3. Удаляем саму группу
                 figures.Remove(group);
                 selectedFigure = null;
 
-                // 4. Обновляем интерфейс
                 UpdateTreeView();
                 canvasPanel.Invalidate();
                 MessageBox.Show("Группа разделена, шаблон удален.");
@@ -341,25 +425,61 @@ namespace Lab1
 
             if (customTemplates.ContainsKey(selectedType))
             {
-                // Твой текущий вызов клонирования
                 f = CloneFigure(customTemplates[selectedType], center, customTemplates[selectedType].BaseLocation);
-
-                // ДОБАВЛЯЕМ: Присваиваем имя из ключа словаря (то самое название, что ты вводил)
                 f.Name = selectedType;
             }
             else
             {
                 switch (selectedType)
                 {
-                    case "Прямоугольник": f = new Lab1.Figures.Rectangle(center); break;
-                    case "Треугольник": f = new Triangle(center); break;
-                    case "Круг": f = new Circle(center); break;
-                    case "Трапеция": f = new Trapezium(center); break;
-                    case "Пятиугольник": f = new Pentagon(center); break;
+                    case "Прямоугольник":
+                        f = new Polygon(center, new[] {
+                            new PointF(-50, -50), new PointF(50, -50),
+                            new PointF(50, 50), new PointF(-50, 50)
+                        });
+                        break;
+                    case "Треугольник":
+                        f = new Polygon(center, new[] {
+                            new PointF(0, -50), new PointF(45, 40), new PointF(-45, 40)
+                        });
+                        break;
+                    case "Эллипс":
+                        f = new Ellipse(center, 50, 50);
+                        break;
+                    case "Трапеция":
+                        f = new Polygon(center, new[] {
+                            new PointF(-30, -30), new PointF(30, -30),
+                            new PointF(60, 30), new PointF(-60, 30)
+                        });
+                        break;
+                    case "Пятиугольник":
+                        var vertices = new List<PointF>();
+                        for (int i = 0; i < 5; i++)
+                        {
+                            double angle = -Math.PI / 2 + i * 2 * Math.PI / 5;
+                            vertices.Add(new PointF((float)(60 * Math.Cos(angle)), (float)(60 * Math.Sin(angle))));
+                        }
+                        f = new Polygon(center, vertices);
+                        break;
+                    case "Новая фигура":
+                        isModifyingGroupMode = false;
+                        isDrawingMode = true;
+                        isGroupingMode = false;
+                        currentDrawPoints.Clear();
+                        selectedFigure = null;
+                        MessageBox.Show("Режим рисования включен.\nЛКМ - точки, ПКМ - завершить.", "Рисование");
+                        break;
                 }
+                if (f != null) f.Name = selectedType;
             }
 
-            if (f != null) { figures.Add(f); selectedFigure = f; UpdateTreeView(); canvasPanel.Invalidate(); }
+            if (f != null)
+            {
+                figures.Add(f);
+                selectedFigure = f;
+                UpdateTreeView();
+                canvasPanel.Invalidate();
+            }
         }
 
         private void CanvasPanel_Paint(object sender, PaintEventArgs e)
@@ -368,19 +488,26 @@ namespace Lab1
 
             foreach (var fig in figures) fig.Draw(e.Graphics);
 
-            if (selectedFigure != null && !isDrawingMode && !isGroupingMode)
+            if (selectedFigure != null && !isDrawingMode && !isGroupingMode && !isModifyingGroupMode)
             {
                 var bounds = selectedFigure.GetBounds();
                 Color selectionColor = Color.Black;
 
-                if (selectedFigure is PolygonBase poly)
+                if (selectedFigure is Polygon poly)
                 {
                     if (poly.Sides.Count > 0 && poly.Sides[0].Color.R == 0 && poly.Sides[0].Color.G == 0 && poly.Sides[0].Color.B == 0)
                         selectionColor = Color.DeepSkyBlue;
                 }
+                else if (selectedFigure is Ellipse ellipse)
+                {
+                    if (ellipse.Sides.Count > 0 && ellipse.Sides[0].Color.R == 0 && ellipse.Sides[0].Color.G == 0 && ellipse.Sides[0].Color.B == 0)
+                        selectionColor = Color.DeepSkyBlue;
+                }
                 else if (selectedFigure is GroupFigure group && group.SubFigures.Count > 0)
                 {
-                    if (group.SubFigures[0] is PolygonBase firstPoly && firstPoly.Sides.Count > 0 && firstPoly.Sides[0].Color == Color.Black)
+                    var first = group.SubFigures[0];
+                    if ((first is Polygon p && p.Sides.Count > 0 && p.Sides[0].Color == Color.Black) ||
+                        (first is Ellipse el && el.Sides.Count > 0 && el.Sides[0].Color == Color.Black))
                         selectionColor = Color.DeepSkyBlue;
                 }
 
@@ -390,25 +517,28 @@ namespace Lab1
                 }
                 e.Graphics.FillEllipse(Brushes.Blue, selectedFigure.Center.X - 3, selectedFigure.Center.Y - 3, 6, 6);
 
-                // НОВОЕ: Отрисовка подсветки выбранной стороны поверх фигуры
-                if (HighlightedSideIndex >= 0 && HighlightedSideIndex < selectedFigure.Sides.Count)
+                if (selectedFigure != null && !(selectedFigure is Ellipse) &&
+    HighlightedSideIndex >= 0 && HighlightedSideIndex < selectedFigure.Sides.Count)
                 {
                     var side = selectedFigure.Sides[HighlightedSideIndex];
                     var nextSide = selectedFigure.Sides[(HighlightedSideIndex + 1) % selectedFigure.Sides.Count];
 
-                    // Учитываем текущий масштаб фигуры
                     float scale = selectedFigure.Size / 100f;
 
-                    // Вычисляем абсолютные координаты начала и конца линии
-                    PointF p1 = new PointF(selectedFigure.Center.X + side.RelativeOffset.X * scale, selectedFigure.Center.Y + side.RelativeOffset.Y * scale);
-                    PointF p2 = new PointF(selectedFigure.Center.X + nextSide.RelativeOffset.X * scale, selectedFigure.Center.Y + nextSide.RelativeOffset.Y * scale);
+                    PointF p1 = new PointF(selectedFigure.Center.X + side.RelativeOffset.X * scale,
+                                           selectedFigure.Center.Y + side.RelativeOffset.Y * scale);
+                    PointF p2 = new PointF(selectedFigure.Center.X + nextSide.RelativeOffset.X * scale,
+                                           selectedFigure.Center.Y + nextSide.RelativeOffset.Y * scale);
 
-                    // Рисуем толстую пурпурную линию для стороны и круг на ее "базовой" вершине
                     using (Pen highlightPen = new Pen(Color.Magenta, side.Thickness + 3))
                     {
                         e.Graphics.DrawLine(highlightPen, p1, p2);
                     }
                     e.Graphics.FillEllipse(Brushes.Magenta, p1.X - 6, p1.Y - 6, 12, 12);
+                }
+                if (selectedFigure is Ellipse)
+                {
+                    DrawHandles(e.Graphics, bounds);
                 }
             }
 
@@ -449,9 +579,95 @@ namespace Lab1
             }
         }
 
+        private void DrawHandles(Graphics g, RectangleF bounds)
+        {
+            float x = bounds.X, y = bounds.Y, w = bounds.Width, h = bounds.Height;
+            float midX = x + w / 2, midY = y + h / 2;
+
+            RectangleF[] rects = new RectangleF[]
+            {
+                new RectangleF(x - HandleSize/2, y - HandleSize/2, HandleSize, HandleSize),
+                new RectangleF(midX - HandleSize/2, y - HandleSize/2, HandleSize, HandleSize),
+                new RectangleF(x + w - HandleSize/2, y - HandleSize/2, HandleSize, HandleSize),
+                new RectangleF(x + w - HandleSize/2, midY - HandleSize/2, HandleSize, HandleSize),
+                new RectangleF(x + w - HandleSize/2, y + h - HandleSize/2, HandleSize, HandleSize),
+                new RectangleF(midX - HandleSize/2, y + h - HandleSize/2, HandleSize, HandleSize),
+                new RectangleF(x - HandleSize/2, y + h - HandleSize/2, HandleSize, HandleSize),
+                new RectangleF(x - HandleSize/2, midY - HandleSize/2, HandleSize, HandleSize)
+            };
+
+            foreach (var r in rects)
+            {
+                g.FillRectangle(Brushes.White, r);
+                g.DrawRectangle(Pens.Black, r);
+            }
+
+            PointF rotateCenter = new PointF(midX, y - 25);
+            float rotateRadius = 5;
+            g.DrawLine(Pens.Black, midX, y, midX, y - 20);
+            g.FillEllipse(Brushes.White, rotateCenter.X - rotateRadius, rotateCenter.Y - rotateRadius, rotateRadius * 2, rotateRadius * 2);
+            g.DrawEllipse(Pens.Black, rotateCenter.X - rotateRadius, rotateCenter.Y - rotateRadius, rotateRadius * 2, rotateRadius * 2);
+
+            // --- ОТРИСОВКА ФОКУСОВ ---
+            if (selectedFigure is Ellipse ell)
+            {
+                PointF f1 = ell.GetFocus1();
+                PointF f2 = ell.GetFocus2();
+
+                using (Brush fb = new SolidBrush(Color.Orange))
+                using (Pen fp = new Pen(Color.DarkRed, 2))
+                {
+                    g.FillEllipse(fb, f1.X - 5, f1.Y - 5, 10, 10);
+                    g.DrawEllipse(fp, f1.X - 5, f1.Y - 5, 10, 10);
+
+                    g.FillEllipse(fb, f2.X - 5, f2.Y - 5, 10, 10);
+                    g.DrawEllipse(fp, f2.X - 5, f2.Y - 5, 10, 10);
+                }
+            }
+        }
+
+        private HandleType HitTestHandles(PointF mouse, RectangleF bounds)
+        {
+            if (selectedFigure == null || !(selectedFigure is Ellipse)) return HandleType.None;
+
+            Ellipse ell = selectedFigure as Ellipse;
+
+            // Проверка попадания в фокусы (делаем в первую очередь, чтобы они перехватывали клик у других маркеров)
+            PointF f1 = ell.GetFocus1();
+            if (new RectangleF(f1.X - 6, f1.Y - 6, 12, 12).Contains(mouse)) return HandleType.Focus1;
+            PointF f2 = ell.GetFocus2();
+            if (new RectangleF(f2.X - 6, f2.Y - 6, 12, 12).Contains(mouse)) return HandleType.Focus2;
+
+            float x = bounds.X, y = bounds.Y, w = bounds.Width, h = bounds.Height;
+            float midX = x + w / 2, midY = y + h / 2;
+
+            RectangleF rotateRect = new RectangleF(midX - 10, y - 30, 20, 30);
+            if (rotateRect.Contains(mouse)) return HandleType.Rotate;
+
+            RectangleF[] handleRects = new RectangleF[]
+            {
+                new RectangleF(x - HandleSize/2, y - HandleSize/2, HandleSize, HandleSize),
+                new RectangleF(midX - HandleSize/2, y - HandleSize/2, HandleSize, HandleSize),
+                new RectangleF(x + w - HandleSize/2, y - HandleSize/2, HandleSize, HandleSize),
+                new RectangleF(x + w - HandleSize/2, midY - HandleSize/2, HandleSize, HandleSize),
+                new RectangleF(x + w - HandleSize/2, y + h - HandleSize/2, HandleSize, HandleSize),
+                new RectangleF(midX - HandleSize/2, y + h - HandleSize/2, HandleSize, HandleSize),
+                new RectangleF(x - HandleSize/2, y + h - HandleSize/2, HandleSize, HandleSize),
+                new RectangleF(x - HandleSize/2, midY - HandleSize/2, HandleSize, HandleSize)
+            };
+
+            HandleType[] types = { HandleType.ResizeNW, HandleType.ResizeN, HandleType.ResizeNE,
+                                   HandleType.ResizeE, HandleType.ResizeSE, HandleType.ResizeS,
+                                   HandleType.ResizeSW, HandleType.ResizeW };
+
+            for (int i = 0; i < handleRects.Length; i++)
+                if (handleRects[i].Contains(mouse)) return types[i];
+
+            return HandleType.None;
+        }
+
         private void CanvasPanel_MouseDown(object sender, MouseEventArgs e)
         {
-            // --- РЕЖИМ МОДИФИКАЦИИ ГРУППЫ ---
             if (isModifyingGroupMode && activeGroupToModify != null)
             {
                 if (e.Button == MouseButtons.Left)
@@ -459,7 +675,6 @@ namespace Lab1
                     Figure clickedInside = activeGroupToModify.SubFigures.LastOrDefault(f => f.Contains(e.Location));
                     if (clickedInside != null)
                     {
-                        // Извлекаем фигуру из группы
                         activeGroupToModify.SubFigures.Remove(clickedInside);
                         figures.Add(clickedInside);
 
@@ -469,20 +684,19 @@ namespace Lab1
                             selectedFigure = null;
                             isModifyingGroupMode = false;
                             activeGroupToModify = null;
-                            SelectNodeByFigure(null); // Снимаем выделение в дереве
+                            SelectNodeByFigure(null);
                             MessageBox.Show("В группе не осталось фигур. Группа удалена.");
                         }
                         else
                         {
                             UpdateGroupCenter(activeGroupToModify);
-                            selectedFigure = clickedInside; // Выделяем извлеченную фигуру
+                            selectedFigure = clickedInside;
                             SelectNodeByFigure(selectedFigure);
                         }
                         UpdateTreeView();
                     }
                     else
                     {
-                        // Добавляем фигуру в группу
                         Figure clickedOutside = figures.LastOrDefault(f => f != activeGroupToModify && f.Contains(e.Location));
                         if (clickedOutside != null)
                         {
@@ -502,7 +716,7 @@ namespace Lab1
                     if (clickedInside != null)
                     {
                         selectedFigure = clickedInside;
-                        SelectNodeByFigure(selectedFigure); // Подсвечиваем подфигуру в списке
+                        SelectNodeByFigure(selectedFigure);
 
                         if (currentEditor != null && !currentEditor.IsDisposed) currentEditor.Close();
                         currentEditor = new EditorForm(clickedInside, this, canvasPanel) { Owner = this };
@@ -510,7 +724,6 @@ namespace Lab1
                     }
                     else
                     {
-                        // Выход из режима модификации группы
                         isModifyingGroupMode = false;
                         activeGroupToModify = null;
                         SelectNodeByFigure(null);
@@ -520,20 +733,18 @@ namespace Lab1
                 return;
             }
 
-            // --- РЕЖИМ РИСОВАНИЯ (CUSTOM) ---
             if (isDrawingMode)
             {
                 if (e.Button == MouseButtons.Left) currentDrawPoints.Add(e.Location);
                 else if (e.Button == MouseButtons.Right && currentDrawPoints.Count > 2)
                 {
                     FinishCustomDrawing();
-                    SelectNodeByFigure(selectedFigure); // Выделяем новую созданную фигуру в списке
+                    SelectNodeByFigure(selectedFigure);
                 }
                 canvasPanel.Invalidate();
                 return;
             }
 
-            // --- РЕЖИМ ГРУППИРОВКИ ---
             if (isGroupingMode)
             {
                 if (e.Button == MouseButtons.Left)
@@ -545,56 +756,157 @@ namespace Lab1
                         else currentGroupSelection.Add(clicked);
 
                         selectedFigure = clicked;
-                        SelectNodeByFigure(selectedFigure); // Визуально отмечаем в списке, что выбираем
+                        SelectNodeByFigure(selectedFigure);
                     }
                 }
                 else if (e.Button == MouseButtons.Right)
                 {
                     FinishGrouping();
-                    SelectNodeByFigure(selectedFigure); // Выделяем созданную группу
+                    SelectNodeByFigure(selectedFigure);
                 }
                 canvasPanel.Invalidate();
                 return;
             }
 
-            // --- ОБЫЧНЫЙ РЕЖИМ (ВЫДЕЛЕНИЕ И ПЕРЕМЕЩЕНИЕ) ---
-            Figure hitFig = figures.LastOrDefault(f => f.Contains(e.Location));
-            if (hitFig != null)
+            if (!isModifyingGroupMode && !isDrawingMode && !isGroupingMode)
             {
-                selectedFigure = hitFig;
-                SelectNodeByFigure(selectedFigure); // СИНХРОНИЗАЦИЯ: подсвечиваем в TreeView
-
-                if (e.Button == MouseButtons.Left)
+                // Сначала проверим, попали ли в маркер выделенной фигуры
+                if (selectedFigure is Ellipse)
                 {
-                    isDragging = true;
-                    lastMousePos = e.Location;
+                    var bounds = selectedFigure.GetBounds();
+                    HandleType hit = HitTestHandles(e.Location, bounds);
+                    if (hit != HandleType.None)
+                    {
+                        activeHandle = hit;
+                        handleStartMouse = e.Location;
+                        handleStartBounds = bounds;
+                        handleStartRotation = selectedFigure.Rotation;
+                        Ellipse ell = selectedFigure as Ellipse;
+                        handleStartRadiusX = ell.RadiusX;
+                        handleStartRadiusY = ell.RadiusY;
+                        canvasPanel.Capture = true;
+                        return;
+                    }
                 }
-                else if (e.Button == MouseButtons.Right)
-                {
-                    if (currentEditor != null && !currentEditor.IsDisposed) currentEditor.Close();
-                    currentEditor = new EditorForm(selectedFigure, this, canvasPanel) { Owner = this };
-                    currentEditor.Show();
-                }
-            }
-            else
-            {
-                selectedFigure = null;
-                HighlightedSideIndex = -1;
-                SelectNodeByFigure(null); // СИНХРОНИЗАЦИЯ: снимаем выделение в TreeView
-            }
 
-            canvasPanel.Invalidate();
+                // Обычное выделение/перетаскивание
+                Figure hitFig = figures.LastOrDefault(f => f.Contains(e.Location));
+                if (hitFig != null)
+                {
+                    selectedFigure = hitFig;
+                    SelectNodeByFigure(selectedFigure);
+
+                    if (e.Button == MouseButtons.Left)
+                    {
+                        isDragging = true;
+                        lastMousePos = e.Location;
+                        activeHandle = HandleType.Move; // помечаем, что перетаскиваем всю фигуру
+                    }
+                    else if (e.Button == MouseButtons.Right)
+                    {
+                        if (currentEditor != null && !currentEditor.IsDisposed) currentEditor.Close();
+                        currentEditor = new EditorForm(selectedFigure, this, canvasPanel) { Owner = this };
+                        currentEditor.Show();
+                    }
+                }
+                else
+                {
+                    selectedFigure = null;
+                    HighlightedSideIndex = -1;
+                    SelectNodeByFigure(null);
+                }
+                canvasPanel.Invalidate();
+            }
+        }
+
+        private void CanvasPanel_MouseUp(object sender, MouseEventArgs e)
+        {
+            isDragging = false;
+            activeHandle = HandleType.None;
+            canvasPanel.Capture = false;
         }
 
         private void CanvasPanel_MouseMove(object sender, MouseEventArgs e)
         {
             currentMouseHoverPos = e.Location;
-            if (isDragging && selectedFigure != null)
+            if (activeHandle != HandleType.None && activeHandle != HandleType.Move && selectedFigure is Ellipse ell)
+            {
+                // --- ЛОГИКА ДЛЯ ПЕРЕТАСКИВАНИЯ ФОКУСОВ ---
+                if (activeHandle == HandleType.Focus1 || activeHandle == HandleType.Focus2)
+                {
+                    PointF currentF1 = ell.GetFocus1();
+                    PointF currentF2 = ell.GetFocus2();
+
+                    if (activeHandle == HandleType.Focus1)
+                        ell.SetFoci(e.Location, currentF2);
+                    else
+                        ell.SetFoci(currentF1, e.Location);
+
+                    canvasPanel.Invalidate();
+                    return;
+                }
+
+                float scale = selectedFigure.Size / 100f;
+                PointF localMouse = RotatePoint(e.Location, selectedFigure.Center, -selectedFigure.Rotation);
+                PointF localStart = RotatePoint(handleStartMouse, selectedFigure.Center, -selectedFigure.Rotation);
+
+                float dx = localMouse.X - localStart.X;
+                float dy = localMouse.Y - localStart.Y;
+
+                float startRx = Math.Abs(handleStartRadiusX) * scale;
+                float startRy = Math.Abs(handleStartRadiusY) * scale;
+
+                float newRx = startRx;
+                float newRy = startRy;
+
+                switch (activeHandle)
+                {
+                    case HandleType.ResizeE: newRx += dx; break;
+                    case HandleType.ResizeW: newRx -= dx; break;
+                    case HandleType.ResizeN: newRy -= dy; break;
+                    case HandleType.ResizeS: newRy += dy; break;
+                    case HandleType.ResizeNE: newRx += dx; newRy -= dy; break;
+                    case HandleType.ResizeNW: newRx -= dx; newRy -= dy; break;
+                    case HandleType.ResizeSE: newRx += dx; newRy += dy; break;
+                    case HandleType.ResizeSW: newRx -= dx; newRy += dy; break;
+                    case HandleType.Rotate:
+                        PointF center = selectedFigure.Center;
+                        float startAngle = (float)(Math.Atan2(handleStartMouse.Y - center.Y, handleStartMouse.X - center.X) * 180 / Math.PI);
+                        float currentAngle = (float)(Math.Atan2(e.Y - center.Y, e.X - center.X) * 180 / Math.PI);
+                        float deltaAngle = currentAngle - startAngle;
+                        selectedFigure.Rotation = handleStartRotation + deltaAngle;
+                        canvasPanel.Invalidate();
+                        return;
+                }
+
+                float minRadius = 5;
+                newRx = Math.Max(minRadius, newRx);
+                newRy = Math.Max(minRadius, newRy);
+                ell.RadiusX = newRx / scale;
+                ell.RadiusY = newRy / scale;
+                canvasPanel.Invalidate();
+                return;
+            }
+
+            if (isDragging && selectedFigure != null && activeHandle == HandleType.Move)
             {
                 selectedFigure.Move(e.X - lastMousePos.X, e.Y - lastMousePos.Y);
                 lastMousePos = e.Location;
             }
             canvasPanel.Invalidate();
+        }
+
+        private PointF RotatePoint(PointF point, PointF center, float angleDegrees)
+        {
+            double rad = angleDegrees * Math.PI / 180.0;
+            float cos = (float)Math.Cos(rad);
+            float sin = (float)Math.Sin(rad);
+            float dx = point.X - center.X;
+            float dy = point.Y - center.Y;
+            return new PointF(
+                center.X + dx * cos - dy * sin,
+                center.Y + dx * sin + dy * cos
+            );
         }
 
         private void FinishCustomDrawing()
@@ -618,15 +930,21 @@ namespace Lab1
                 Point center = new Point((minX + maxX) / 2, (minY + maxY) / 2);
 
                 var relPoints = currentDrawPoints.Select(p => new PointF(p.X - center.X, p.Y - center.Y)).ToList();
-                var newFig = new CustomPolygon(center, relPoints);
+                var newFig = new Polygon(center, relPoints);
 
+                newFig.Name = name;
                 newFig.Size = 100;
                 newFig.FillColor = Color.FromArgb(100, Color.White);
 
-                foreach (var side in newFig.Sides) { side.Color = Color.Black; side.Thickness = 2; }
+                foreach (var side in newFig.Sides)
+                {
+                    side.Color = Color.Black;
+                    side.Thickness = 2;
+                }
 
                 customTemplates[name] = newFig;
-                if (!cbShapeType.Items.Contains(name)) cbShapeType.Items.Add(name);
+                if (!cbShapeType.Items.Contains(name))
+                    cbShapeType.Items.Add(name);
 
                 figures.Add(newFig);
                 selectedFigure = newFig;
@@ -684,10 +1002,14 @@ namespace Lab1
                     ((GroupFigure)clone).SubFigures.Add(subClone);
                 }
             }
-            else if (source is CustomPolygon cp)
+            else if (source is Polygon poly)
             {
-                var pointsCopy = cp.Sides.Select(s => s.RelativeOffset).ToList();
-                clone = new CustomPolygon(newCenter, pointsCopy);
+                var vertices = poly.Sides.Select(s => s.RelativeOffset).ToArray();
+                clone = new Polygon(newCenter, vertices);
+            }
+            else if (source is Ellipse ellipse)
+            {
+                clone = new Ellipse(newCenter, ellipse.RadiusX, ellipse.RadiusY);
             }
             else
             {
@@ -705,7 +1027,6 @@ namespace Lab1
             return clone;
         }
 
-        // НОВОЕ: Методы для работы со списком фигур (TreeView)
         public void UpdateTreeView()
         {
             tvFigures.Nodes.Clear();
@@ -713,17 +1034,15 @@ namespace Lab1
             {
                 AddFigureToNode(fig, tvFigures.Nodes);
             }
-            tvFigures.ExpandAll(); // Раскрываем все группы для удобства
+            tvFigures.ExpandAll();
         }
 
         private void AddFigureToNode(Figure fig, TreeNodeCollection nodes)
         {
-            // Создаем узел с понятным именем
             TreeNode node = new TreeNode(GetFigureReadableName(fig));
-            node.Tag = fig; // Важно! Привязываем саму фигуру к узлу, чтобы потом её найти
+            node.Tag = fig;
             nodes.Add(node);
 
-            // Если это группа, рекурсивно добавляем её подфигуры
             if (fig is GroupFigure group)
             {
                 foreach (var subFig in group.SubFigures)
@@ -735,34 +1054,21 @@ namespace Lab1
 
         private string GetFigureReadableName(Figure fig)
         {
-            // Берем имя или стандартный тип
             string displayName = !string.IsNullOrEmpty(fig.Name) ? fig.Name : GetDefaultTypeName(fig);
-
-            // Добавляем ID в скобках (берем первые 8 символов для компактности)
             string shortId = fig.Id.ToString().Substring(0, 8);
-
             return $"{displayName} [{shortId}]";
         }
 
-        // Вспомогательный метод для определения типа по умолчанию
         private string GetDefaultTypeName(Figure fig)
         {
             if (fig is GroupFigure) return "Группа";
-            if (fig is CustomPolygon) return "Своя фигура";
-
-            switch (fig.GetType().Name)
-            {
-                case "Rectangle": return "Прямоугольник";
-                case "Triangle": return "Треугольник";
-                case "Circle": return "Круг";
-                case "Trapezium": return "Трапеция";
-                case "Pentagon": return "Пятиугольник";
-                default: return fig.GetType().Name;
-            }
+            if (fig is Polygon) return "Многоугольник";
+            if (fig is Ellipse) return "Эллипс";
+            return fig.GetType().Name;
         }
+
         private void RemoveTemplateIfExist(string name)
         {
-            // Проверяем, что это не стандартная фигура (их удалять нельзя)
             string[] standardShapes = { "Прямоугольник", "Треугольник", "Круг", "Трапеция", "Пятиугольник" };
 
             if (!string.IsNullOrEmpty(name) && !standardShapes.Contains(name))
@@ -772,24 +1078,22 @@ namespace Lab1
                     customTemplates.Remove(name);
                     cbShapeType.Items.Remove(name);
 
-                    // Если удалили выбранный элемент, сбрасываем индекс на первый (Прямоугольник)
                     if (cbShapeType.SelectedIndex == -1)
                         cbShapeType.SelectedIndex = 0;
                 }
             }
         }
-        // Выделение фигуры при клике в списке
+
         private void TvFigures_AfterSelect(object sender, TreeViewEventArgs e)
         {
             if (e.Node.Tag is Figure fig)
             {
                 selectedFigure = fig;
-                HighlightedSideIndex = -1; // Сбрасываем выделение стороны
+                HighlightedSideIndex = -1;
                 canvasPanel.Invalidate();
             }
         }
 
-        // Метод для выделения узла в дереве при клике на фигуру на холсте
         private void SelectNodeByFigure(Figure fig)
         {
             if (fig == null)
@@ -798,12 +1102,11 @@ namespace Lab1
                 return;
             }
 
-            // Ищем узел рекурсивно
             TreeNode node = FindNodeByTag(tvFigures.Nodes, fig);
             if (node != null)
             {
                 tvFigures.SelectedNode = node;
-                node.EnsureVisible(); // Прокручиваем список к узлу, если он скрыт
+                node.EnsureVisible();
             }
         }
 
@@ -820,15 +1123,11 @@ namespace Lab1
 
         private void TvFigures_AfterLabelEdit(object sender, NodeLabelEditEventArgs e)
         {
-            // Если пользователь не отменил ввод и ввел текст
             if (e.Label != null && !string.IsNullOrWhiteSpace(e.Label))
             {
                 if (e.Node.Tag is Figure fig)
                 {
                     fig.Name = e.Label;
-
-                    // Отменяем стандартное изменение текста узла, 
-                    // так как UpdateTreeView сам перерисует его красиво с ID
                     e.CancelEdit = true;
                     UpdateTreeView();
                 }
@@ -854,21 +1153,15 @@ namespace Lab1
         private ComboBox cbShapeType;
         private Button btnAddShape;
         private Button btnClearAll;
-        private Button btnDrawCustom;
         private Button btnGroupShapes;
         private Button btnUngroup;
         private Button btnModifyGroup;
+        private Button btnSaveSelected;
         private Button btnSave;
         private Button btnLoad;
         private Panel rightPanel;
         private TreeView tvFigures;
         private Label lblTree;
-
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing && (components != null)) components.Dispose();
-            base.Dispose(disposing);
-        }
 
         private void InitializeComponent()
         {
@@ -880,32 +1173,34 @@ namespace Lab1
             toolbar = new Panel { Dock = DockStyle.Top, Height = 80, BackColor = Color.FromArgb(100, 160, 210), Padding = new Padding(10) };
 
             cbShapeType = new ComboBox { Location = new Point(15, 20), Size = new Size(200, 35), DropDownStyle = ComboBoxStyle.DropDownList };
-            cbShapeType.Items.AddRange(new object[] { "Прямоугольник", "Треугольник", "Круг", "Трапеция", "Пятиугольник" });
+            cbShapeType.Items.AddRange(new object[] { "Прямоугольник", "Треугольник", "Эллипс", "Трапеция", "Пятиугольник", "Новая фигура" });
             cbShapeType.SelectedIndex = 0;
 
             btnAddShape = new Button { Text = "Добавить", Location = new Point(230, 18), Size = new Size(130, 40), BackColor = Color.FromArgb(30, 90, 140), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
-            btnClearAll = new Button { Text = "Очистить", Location = new Point(370, 18), Size = new Size(130, 40), BackColor = Color.FromArgb(30, 90, 140), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            btnClearAll = new Button { Text = "Очистить", Location = new Point(380, 18), Size = new Size(130, 40), BackColor = Color.FromArgb(30, 90, 140), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            btnGroupShapes = new Button { Text = "Объединить", Location = new Point(530, 18), Size = new Size(140, 40), BackColor = Color.FromArgb(30, 90, 140), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            btnUngroup = new Button { Text = "Разделить", Location = new Point(680, 18), Size = new Size(130, 40), BackColor = Color.FromArgb(30, 90, 140), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            btnModifyGroup = new Button { Text = "Изменить", Location = new Point(820, 18), Size = new Size(130, 40), BackColor = Color.FromArgb(30, 90, 140), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            btnSaveSelected = new Button { Text = "Сохранить", Location = new Point(970, 18), Size = new Size(130, 40), BackColor = Color.FromArgb(60, 120, 170), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            btnSave = new Button { Text = "Сохранить все", Location = new Point(1110, 18), Size = new Size(160, 40), BackColor = Color.FromArgb(60, 120, 170), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            btnLoad = new Button { Text = "Загрузить", Location = new Point(1280, 18), Size = new Size(130, 40), BackColor = Color.FromArgb(60, 120, 170), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
 
-            btnDrawCustom = new Button { Text = "Нарисовать", Location = new Point(510, 18), Size = new Size(150, 40), BackColor = Color.FromArgb(30, 90, 140), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
-            btnGroupShapes = new Button { Text = "Объединить", Location = new Point(670, 18), Size = new Size(150, 40), BackColor = Color.FromArgb(30, 90, 140), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
-            btnUngroup = new Button { Text = "Разделить", Location = new Point(830, 18), Size = new Size(150, 40), BackColor = Color.FromArgb(30, 90, 140), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
-            btnModifyGroup = new Button { Text = "Изменить", Location = new Point(990, 18), Size = new Size(130, 40), BackColor = Color.FromArgb(30, 90, 140), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            btnSaveSelected.Click += BtnSaveSelected_Click;
+            btnSave.Click += BtnSave_Click;
 
-            btnSave = new Button { Text = "Сохранить", Location = new Point(1130, 18), Size = new Size(130, 40), BackColor = Color.FromArgb(60, 120, 170), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
-            btnLoad = new Button { Text = "Загрузить", Location = new Point(1270, 18), Size = new Size(130, 40), BackColor = Color.FromArgb(60, 120, 170), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            toolbar.Controls.AddRange(new Control[] { cbShapeType, btnAddShape, btnClearAll, btnGroupShapes, btnUngroup, btnModifyGroup, btnSaveSelected, btnSave, btnLoad });
 
-            toolbar.Controls.AddRange(new Control[] { cbShapeType, btnAddShape, btnClearAll, btnDrawCustom, btnGroupShapes, btnUngroup, btnModifyGroup, btnSave, btnLoad });
             rightPanel = new Panel { Dock = DockStyle.Right, Width = 250, BackColor = Color.FromArgb(100, 160, 210), Padding = new Padding(5) };
             lblTree = new Label { Text = "Список фигур", Dock = DockStyle.Top, Height = 30, TextAlign = ContentAlignment.MiddleCenter, Font = new Font("Segoe UI", 12F, FontStyle.Bold) };
-            tvFigures = new TreeView { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 12F), HideSelection = false };
+            tvFigures = new TreeView { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 12F), HideSelection = false, CheckBoxes = true };
 
-            // Обработчик: при клике на фигуру в списке, она выделяется на холсте
             tvFigures.AfterSelect += TvFigures_AfterSelect;
-            tvFigures.LabelEdit = true; // Разрешаем редактировать текст узлов
-            tvFigures.AfterLabelEdit += TvFigures_AfterLabelEdit; // Событие после переименования
+            tvFigures.LabelEdit = true;
+            tvFigures.AfterLabelEdit += TvFigures_AfterLabelEdit;
 
             rightPanel.Controls.Add(tvFigures);
             rightPanel.Controls.Add(lblTree);
+
             canvasPanel = new DoubleBufferedPanel { Dock = DockStyle.Fill, BackColor = Color.WhiteSmoke };
 
             this.Controls.Add(canvasPanel);
@@ -940,10 +1235,11 @@ namespace Lab1
 
     public class SideData
     {
-        public string Info { get; set; } // НОВОЕ: Читаемое описание стороны в JSON
+        public string Info { get; set; }
         public int ColorArgb { get; set; }
         public float Thickness { get; set; }
         public float RelOffsetX { get; set; }
         public float RelOffsetY { get; set; }
     }
+
 }
